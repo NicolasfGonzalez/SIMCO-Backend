@@ -1,21 +1,20 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from core.database import engine, Base
 
-# Creamos la instancia exacta que busca Uvicorn
-app = FastAPI(
-    title="FastAPI Base App",
-    version="1.0.0"
-)
+app = FastAPI()
 
-# Configuración básica de CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.on_event("startup")
+async def startup():
+    try:
+        async with engine.begin() as conn:
+            # Crear todas las tablas
+            await conn.run_sync(Base.metadata.create_all)
+        print("✓ Conexión a la base de datos exitosa")
+        print("✓ Tablas creadas correctamente")
+    except Exception as e:
+        print(f"⚠ Aviso: No se pudo conectar a la DB al iniciar: {e}")
+        print("⚠ La app seguirá corriendo, pero necesitará conexión DB para funcionar")
 
-@app.get("/")
-def root():
-    return {"status": "Healthy", "message": "Plantilla Base Funcionando"}
+@app.on_event("shutdown")
+async def shutdown():
+    await engine.dispose()
