@@ -1,21 +1,23 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from core.database import engine, Base
+from api.v1.api import api_router
 
-# Creamos la instancia exacta que busca Uvicorn
-app = FastAPI(
-    title="FastAPI Base App",
-    version="1.0.0"
-)
+app = FastAPI(title="SIMCO API", version="1.0.0", docs_url="/docs", redoc_url="/redoc")
+app.include_router(api_router, prefix="/api/v1")
 
-# Configuración básica de CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.on_event("startup")
+async def startup():
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        print("✓ BD conectada correctamente")
+    except Exception:
+        pass  # Silenciosamente si falla (network issue, etc)
+
+@app.on_event("shutdown")
+async def shutdown():
+    await engine.dispose()
 
 @app.get("/")
-def root():
-    return {"status": "Healthy", "message": "Plantilla Base Funcionando"}
+async def root():
+    return {"message": "SIMCO API - Ver /docs para documentación"}

@@ -1,0 +1,30 @@
+# Entorno virtual
+venv/
+env/
+
+# Variables de entorno (MUY IMPORTANTE)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# Archivos temporales
+*.tmp
+
+# Base de datos local (por si usas sqlite)
+*.db

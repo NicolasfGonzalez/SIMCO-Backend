@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from typing import List
-from app.schemas.item import ItemCreate, ItemResponse
+from schemas.item import ItemCreate, ItemResponse
 
 router = APIRouter()
 
