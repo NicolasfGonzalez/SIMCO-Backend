@@ -24,3 +24,35 @@ def map_user_to_list_response(user: User) -> UserListResponse:
         role=user.role.name,  
         status="Activo" if user.is_active else "Inactivo"  
     )
+
+# Mapper 
+def map_user_to_detail_response(user):
+
+    return {
+
+        "id_user":user.id_user,
+
+        "name":user.name,
+
+        "email":user.email,
+
+
+        "id_role":user.id_role,
+
+        "role":
+            user.role.name
+            if user.role else None,
+
+
+        "id_client":user.id_client,
+
+        "client":
+            user.client.name
+            if user.client else None,
+
+
+        "status":
+            "Activo"
+            if user.is_active
+            else "Inactivo"
+    }

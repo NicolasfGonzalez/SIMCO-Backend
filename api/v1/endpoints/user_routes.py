@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
+from pydantic import BaseModel
+from typing import List
 
 from core.database import get_db
 from schemas.user import UserCreate, UserUpdate, UserResponse
@@ -8,7 +10,8 @@ from services.user_service import create_user, update_user
 from schemas.user import UserListResponse
 from services.user_service import list_users
 from services.user_service import toggle_user_status
-
+from services.user_service import get_user_by_id
+from schemas.user import UserDetailResponse
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -28,12 +31,15 @@ async def update_user_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     return await update_user(db, user_id, user)
+class PaginatedUsersResponse(BaseModel):
+    items: List[UserListResponse]
+    total: int
 
 # Endpoints de Usuario Listar
-@router.get("/", response_model=list[UserListResponse])
+@router.get("/", response_model=PaginatedUsersResponse)
 async def list_users_endpoint(
     client_id: UUID | None = None,
-    limit: int = 10,
+    limit: int = 5,
     offset: int = 0,
     db: AsyncSession = Depends(get_db)
 ):
@@ -46,3 +52,18 @@ async def toggle_user_status_endpoint(
     db: AsyncSession = Depends(get_db)
 ):
     return await toggle_user_status(db, user_id)
+
+# En
+@router.get(
+    "/{user_id}",
+    response_model=UserDetailResponse
+)
+async def get_user(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db)
+):
+
+    return await get_user_by_id(
+        db,
+        user_id
+    )

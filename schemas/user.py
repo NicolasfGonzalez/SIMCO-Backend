@@ -58,7 +58,6 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     id_role: Optional[int] = None
     id_client: Optional[UUID] = None
-    is_active: Optional[bool] = None
 
     @field_validator("name")
     @classmethod
@@ -75,3 +74,16 @@ class UserListResponse(BaseModel):
     role: str
     status: str
 
+# Traer datos completos del usuario 
+class UserDetailResponse(BaseModel):
+    id_user:UUID
+    name:str
+    email:EmailStr
+    id_role:int
+    role:str
+    id_client:UUID
+    client:str
+    status:str
+    model_config = ConfigDict(
+        from_attributes=True
+    )
