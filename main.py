@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
+from api.v1.endpoints.auth_routes import router as auth_router
 from core.database import engine, Base
 from api.v1.api import api_router
 
@@ -27,6 +27,7 @@ app.add_middleware(
 
 #   routers
 app.include_router(api_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1/auth", tags=["Login"])
 
 #  Eventos
 @app.on_event("startup")
