@@ -5,16 +5,22 @@ from schemas.user import UserLogin
 from services.auth_service import authenticate_user
 from core.security import create_access_token
 from core.database import get_db
+from fastapi import Depends
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import status
+
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 router = APIRouter()
 
 @router.post("/login", response_model=Token)
 async def login_for_access_token(
-    form_data: UserLogin = Depends(),
+    form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
 ):
     # Autenticar las credenciales del usuario
-    user = await authenticate_user(db, email=form_data.email, password=form_data.password)
+    user = await authenticate_user(db, email=form_data.username, password=form_data.password)
 
     if not user:
         raise HTTPException(
@@ -34,5 +40,24 @@ async def login_for_access_token(
 
     return {
         "access_token": access_token,
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "id_user": user.id_user,
+        "id_role": user.id_role
+    }
+
+@router.get("/SecurityTest")
+def security_test(token: str = Depends(oauth2_scheme)):
+    return {
+        "mensaje": "¡Entraste a la zona segura de SIMCO!", 
+        "token_usado": token
+    }
+
+@router.post("/logout", status_code=status.HTTP_200_OK)
+async def logout(
+    token: str = Depends(oauth2_scheme)
+):
+    
+    return {
+        "mensaje": "Cierre de sesión exitoso. Por favor, elimine el token en la aplicación cliente.",
+        "status": "success"
     }
