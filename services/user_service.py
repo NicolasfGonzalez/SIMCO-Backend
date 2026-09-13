@@ -1,203 +1,437 @@
 from uuid import UUID
+
 from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import HTTPException, status
 from sqlalchemy.orm import selectinload
-from schemas.user import UserUpdate, UserCreate, UpdateUserPayload
+
+from fastapi import HTTPException, status
+
+from schemas.user import UserUpdate, UserCreate
+
 from mappers.user_mapper import (
     map_user_to_response,
     map_user_to_list_response,
     map_user_to_detail_response
 )
+
 from models.user import User
 from models.role import Role
 from models.assignment import Assignment
 from models.greenhouse import Greenhouse
+
 from core.security import hash_password
 
-# Crear Usuario
-async def create_user(db: AsyncSession, user_data: UserCreate):
-    try:
-        email = user_data.email.lower().strip()
+# CREAR USUARIO
+async def create_user(
+    db: AsyncSession,
+    user_data: UserCreate
+):
 
-        result = await db.execute(select(User).where(User.email == email))
-        if result.scalars().first():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"field": "email", "message": "El correo ya está registrado"}
+    # Validar correo
+
+    result = await db.execute(
+        select(User)
+        .where(User.email == user_data.email)
+    )
+
+    existing_user = result.scalar_one_or_none()
+
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El correo electrónico ya está registrado"
+        )
+
+    # Validar rol
+
+    result = await db.execute(
+        select(Role)
+        .where(Role.id_role == user_data.id_role)
+    )
+
+    role = result.scalar_one_or_none()
+
+    if not role:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="El rol seleccionado no existe"
+        )
+
+    # Crear usuario
+    new_user = User(
+        name=user_data.name,
+        email=user_data.email,
+        password_hash=hash_password(
+            user_data.password
+        ),
+        id_role=user_data.id_role,
+        is_active=True
+    )
+
+    db.add(new_user)
+
+    await db.flush()
+
+    # Crear asignaciones
+    greenhouse_ids = user_data.greenhouse_ids or []
+
+    # ADMIN no necesita asignaciones
+    if user_data.id_role != 1:
+
+        for greenhouse_id in greenhouse_ids:
+
+            # Validar que el invernadero exista
+            result_greenhouse = await db.execute(
+                select(
+                    Greenhouse.id_greenhouse
+                )
+                .where(
+                    Greenhouse.id_greenhouse == greenhouse_id
+                )
             )
 
-        result = await db.execute(
-            select(Role).where(Role.id_role == user_data.id_role)
+            greenhouse_exists = (
+                result_greenhouse.scalar_one_or_none()
+            )
+
+            if not greenhouse_exists:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=(
+                        f"El invernadero "
+                        f"{greenhouse_id} no existe"
+                    )
+                )
+
+            assignment = Assignment(
+                id_user=new_user.id_user,
+                id_greenhouse=greenhouse_id
+            )
+
+            db.add(assignment)
+
+    # Guardar
+    await db.commit()
+
+    result = await db.execute(
+        select(User)
+        .where(
+            User.id_user == new_user.id_user
         )
-        role = result.scalars().first()
+        .options(
+            selectinload(User.role),
+            selectinload(User.assignments)
+        )
+    )
+
+    new_user = result.scalars().first()
+
+    return map_user_to_response(new_user)
+
+# ACTUALIZAR USUARIO
+async def update_user(
+    db: AsyncSession,
+    user_id: UUID,
+    user_data: UserUpdate
+):
+
+    # Buscar usuario
+    result = await db.execute(
+        select(User)
+        .where(
+            User.id_user == user_id
+        )
+        .options(
+            selectinload(User.role),
+            selectinload(User.assignments)
+        )
+    )
+
+    user = result.scalars().first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+
+    # Validar correo
+    if (
+        user_data.email
+        and user_data.email != user.email
+    ):
+
+        result_email = await db.execute(
+            select(User)
+            .where(
+                User.email == user_data.email,
+                User.id_user != user_id
+            )
+        )
+
+        existing_email = (
+            result_email.scalar_one_or_none()
+        )
+
+        if existing_email:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "El correo electrónico "
+                    "ya está registrado"
+                )
+            )
+
+        user.email = user_data.email
+
+    # Actualizar nombre
+    if user_data.name is not None:
+        user.name = user_data.name
+
+    # Actualizar rol
+    if user_data.id_role is not None:
+
+        result_role = await db.execute(
+            select(Role)
+            .where(
+                Role.id_role == user_data.id_role
+            )
+        )
+
+        role = result_role.scalar_one_or_none()
+
         if not role:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="El rol no existe"
+                detail="El rol seleccionado no existe"
             )
 
-        hashed_password = hash_password(user_data.password)
+        user.id_role = user_data.id_role
 
-        new_user = User(
-            name=user_data.name.strip(),
-            email=email,
-            password_hash=hashed_password,
-            id_role=user_data.id_role,
-            is_active=True
-        )
+    # Determinar rol final
+    target_role = (
+        user_data.id_role
+        if user_data.id_role is not None
+        else user.id_role
+    )
 
-        db.add(new_user)
-        await db.flush()
+    if user_data.greenhouse_ids is not None:
 
-        if user_data.greenhouse_ids:
-            for gh_id in user_data.greenhouse_ids:
-                new_assignment = Assignment(
-                    id_user=new_user.id_user,
-                    id_greenhouse=gh_id
-                )
-                db.add(new_assignment)
-
-        await db.commit()
-        await db.refresh(new_user, attribute_names=["role", "assignments"])
-
-        return map_user_to_response(new_user)
-
-    except HTTPException:
-        await db.rollback()
-        raise
-    except Exception:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error interno al crear usuario"
-        )
-
-# Actualizar Usuario
-async def update_user(db: AsyncSession, user_id: str, user_data: UpdateUserPayload):
-    try:
-        u_uuid = UUID(user_id) if isinstance(user_id, str) else user_id
-
-        result = await db.execute(
-            select(User)
-            .where(User.id_user == u_uuid)
-            .options(
-                selectinload(User.role),
-                selectinload(User.assignments)
+        # Eliminar asignaciones actuales
+        await db.execute(
+            delete(Assignment)
+            .where(
+                Assignment.id_user == user.id_user
             )
         )
-        user = result.scalars().first()
 
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Usuario no encontrado"
-            )
+        # ADMIN no necesita invernaderos
+        if target_role != 1:
 
-        if user_data.email is not None:
-            email = user_data.email.lower().strip()
-            result = await db.execute(
-                select(User).where(User.email == email, User.id_user != u_uuid)
-            )
-            if result.scalars().first():
-                raise HTTPException(
-                    status_code=400,
-                    detail={"field": "email", "message": "El correo ya está registrado"}
-                )
-            user.email = email
+            for greenhouse_id in (
+                user_data.greenhouse_ids
+            ):
 
-        if user_data.id_role is not None:
-            result = await db.execute(
-                select(Role).where(Role.id_role == user_data.id_role)
-            )
-            role = result.scalars().first()
-            if not role:
-                raise HTTPException(404, "El rol no existe")
-            user.id_role = user_data.id_role
-
-        if user_data.name is not None:
-            user.name = user_data.name.strip()
-
-        target_role = user_data.id_role if user_data.id_role is not None else user.id_role
-        
-        if user_data.greenhouse_ids is not None:
-            await db.execute(
-                delete(Assignment).where(Assignment.id_user == u_uuid)
-            )
-            
-            if target_role != 1:
-                for gh_id in user_data.greenhouse_ids:
-                    gh_uuid = UUID(gh_id) if isinstance(gh_id, str) else gh_id
-                    new_assignment = Assignment(
-                        id_user=u_uuid,
-                        id_greenhouse=gh_uuid
+                # Validar existencia
+                result_greenhouse = await db.execute(
+                    select(
+                        Greenhouse.id_greenhouse
                     )
-                    db.add(new_assignment)
+                    .where(
+                        Greenhouse.id_greenhouse
+                        == greenhouse_id
+                    )
+                )
 
-        await db.commit()
-        
-        result_refreshed = await db.execute(
-            select(User)
-            .where(User.id_user == u_uuid)
-            .options(
-                selectinload(User.role),
-                selectinload(User.assignments).selectinload(Assignment.greenhouse)
+                greenhouse_exists = (
+                    result_greenhouse
+                    .scalar_one_or_none()
+                )
+
+                if not greenhouse_exists:
+                    raise HTTPException(
+                        status_code=(
+                            status.HTTP_404_NOT_FOUND
+                        ),
+                        detail=(
+                            f"El invernadero "
+                            f"{greenhouse_id} "
+                            f"no existe"
+                        )
+                    )
+
+                assignment = Assignment(
+                    id_user=user.id_user,
+                    id_greenhouse=greenhouse_id
+                )
+
+                db.add(assignment)
+
+    # Guardar cambios
+    await db.commit()
+
+    result_refreshed = await db.execute(
+        select(User)
+        .where(
+            User.id_user == user.id_user
+        )
+        .options(
+            selectinload(User.role),
+            selectinload(User.assignments)
+        )
+    )
+
+    user = result_refreshed.scalars().first()
+
+    # Obtener IDs de invernaderos
+
+    greenhouse_ids = [
+        assignment.id_greenhouse
+        for assignment in user.assignments
+    ] if user.assignments else []
+
+    client_id = None
+
+    if greenhouse_ids:
+
+        result_client = await db.execute(
+            select(
+                Greenhouse.id_client
             )
-        )
-        user = result_refreshed.scalars().first()
-
-        # Retornamos el mapper de detalle para que devuelva client_id y greenhouse_ids actualizados
-        return map_user_to_detail_response(user)
-
-    except HTTPException:
-        await db.rollback()
-        raise
-    except Exception as e:
-        await db.rollback()
-        print("ERROR CRITICO EN UPDATE_USER:", str(e))
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error al actualizar usuario: {str(e)}"
+            .where(
+                Greenhouse.id_greenhouse.in_(
+                    greenhouse_ids
+                )
+            )
+            .limit(1)
         )
 
-# Listar Usuarios
+        client_id = (
+            result_client.scalar_one_or_none()
+        )
+
+    # Respuesta
+
+    return map_user_to_detail_response(
+        user,
+        client_id=client_id
+    )
+
+
+# LISTAR USUARIOS
 async def list_users(
     db: AsyncSession,
-    client_id: UUID = None,
-    search: str = None,
+    client_id: UUID | None = None,
+    search: str | None = None,
     limit: int = 5,
     offset: int = 0
 ):
+
     query = select(User).options(
         selectinload(User.role),
         selectinload(User.assignments)
     )
 
+    # Filtrar por cliente
     if client_id:
-        query = query.join(Assignment).join(Greenhouse).where(Greenhouse.id_client == client_id)
 
+        query = (
+            query
+            .join(Assignment)
+            .join(Greenhouse)
+            .where(
+                Greenhouse.id_client == client_id
+            )
+        )
+
+    # Buscar por nombre
     if search:
-        query = query.where(User.name.ilike(f"%{search.strip()}%"))
 
-    # Ordenar por fecha de creación (del más reciente al más antiguo)
-    query = query.order_by(User.created_at.desc())
+        query = query.where(
+            User.name.ilike(
+                f"%{search.strip()}%"
+            )
+        )
 
-    total_result = await db.execute(select(func.count()).select_from(query.subquery()))
-    total = total_result.scalar() or 0
+    # Ordenar
+    query = query.order_by(
+        User.created_at.desc()
+    )
 
-    result = await db.execute(query.limit(limit).offset(offset))
-    users = result.scalars().unique().all()
+    # Total
+    total_result = await db.execute(
+        select(
+            func.count()
+        ).select_from(
+            query.subquery()
+        )
+    )
 
+    total = (
+        total_result.scalar()
+        or 0
+    )
+
+    # Paginación
+    result = await db.execute(
+        query
+        .limit(limit)
+        .offset(offset)
+    )
+
+    users = (
+        result.scalars()
+        .unique()
+        .all()
+    )
+
+    # Respuesta
     return {
-        "items": [map_user_to_list_response(user) for user in users],
+        "items": [
+            map_user_to_list_response(user)
+            for user in users
+        ],
         "total": total
     }
 
-# Activar / Desactivar Usuario
-async def toggle_user_status(db: AsyncSession, user_id):
+
+# CAMBIAR ESTADO
+async def toggle_user_status(
+    db: AsyncSession,
+    user_id: UUID
+):
+
+    # Buscar usuario
     result = await db.execute(
         select(User)
-        .where(User.id_user == user_id)
+        .where(
+            User.id_user == user_id
+        )
+        .options(
+            selectinload(User.role),
+            selectinload(User.assignments)
+        )
+    )
+
+    user = result.scalars().first()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
+
+    # Cambiar estado
+    user.is_active = not user.is_active
+
+    await db.commit()
+
+    # Recargar
+    result = await db.execute(
+        select(User)
+        .where(
+            User.id_user == user_id
+        )
         .options(
             selectinload(User.role),
             selectinload(User.assignments)
@@ -205,28 +439,63 @@ async def toggle_user_status(db: AsyncSession, user_id):
     )
     user = result.scalars().first()
 
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
-    user.is_active = not user.is_active
-    await db.commit()
-    await db.refresh(user)
-
     return map_user_to_response(user)
 
-# Obtener Usuario por ID (Detalle)
-async def get_user_by_id(db: AsyncSession, user_id):
+
+# OBTENER USUARIO POR ID
+async def get_user_by_id(
+    db: AsyncSession,
+    user_id: UUID
+):
+    # Buscar usuario
     result = await db.execute(
         select(User)
-        .where(User.id_user == user_id)
+        .where(
+            User.id_user == user_id
+        )
         .options(
             selectinload(User.role),
-            selectinload(User.assignments).selectinload(Assignment.greenhouse)
+            selectinload(User.assignments)
         )
     )
+
     user = result.scalars().first()
 
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Usuario no encontrado"
+        )
 
-    return map_user_to_detail_response(user)
+    # Obtener greenhouse_ids
+    greenhouse_ids = [
+        assignment.id_greenhouse
+        for assignment in user.assignments
+    ] if user.assignments else []
+
+    # Obtener client_id
+    client_id = None
+
+    if greenhouse_ids:
+
+        result_client = await db.execute(
+            select(
+                Greenhouse.id_client
+            )
+            .where(
+                Greenhouse.id_greenhouse.in_(
+                    greenhouse_ids
+                )
+            )
+            .limit(1)
+        )
+
+        client_id = (
+            result_client.scalar_one_or_none()
+        )
+
+    # Respuesta
+    return map_user_to_detail_response(
+        user,
+        client_id=client_id
+    )
