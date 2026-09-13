@@ -3,6 +3,7 @@ from datetime import datetime
 from uuid import UUID
 from typing import Optional
 from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
+from typing import Optional, List
 
 # Crear Usuario 
 class UserCreate(BaseModel):
@@ -10,7 +11,9 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     id_role: int
-    id_client: UUID
+
+    # Invernaderos que se asignarán al usuario
+    greenhouse_ids: list[UUID] = []
 
     @field_validator("name")
     @classmethod
@@ -18,13 +21,16 @@ class UserCreate(BaseModel):
         value = value.strip()
 
         if len(value) < 3:
-            raise ValueError("El nombre debe tener al menos 3 caracteres")
+            raise ValueError(
+                "El nombre debe tener al menos 3 caracteres"
+            )
 
         return value
 
     @field_validator("password")
     @classmethod
     def validate_password(cls, value: str) -> str:
+
         if len(value) < 8:
             raise ValueError("Mínimo 8 caracteres")
 
@@ -65,7 +71,8 @@ class UserUpdate(BaseModel):
         if value and len(value.strip()) < 3:
             raise ValueError("El nombre debe tener al menos 3 caracteres")
         return value
-
+    greenhouse_ids: Optional[List[UUID]] = None
+    
 # Listar Usuario
 class UserListResponse(BaseModel):
     id_user: UUID
@@ -81,9 +88,9 @@ class UserDetailResponse(BaseModel):
     email:EmailStr
     id_role:int
     role:str
-    id_client:UUID
-    client:str
     status:str
+    client_id: Optional[UUID] = None       
+    greenhouse_ids: List[str] = []
     model_config = ConfigDict(
         from_attributes=True
     )
@@ -91,3 +98,5 @@ class UserDetailResponse(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str    
+
+UpdateUserPayload = UserUpdate
