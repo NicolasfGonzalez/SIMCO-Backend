@@ -11,4 +11,6 @@ class Client(Base):
     email = Column(String(100))
     phone = Column(String(20))
 
-    users = relationship("User", back_populates="client")
+    greenhouses = relationship("Greenhouse", back_populates="client", cascade="all, delete-orphan")
+
+    

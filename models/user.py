@@ -17,7 +17,6 @@ class User(Base):
     created_at = Column(TIMESTAMP, server_default=text("NOW()"))
 
     id_role = Column(ForeignKey("role.id_role"), nullable=False)
-    id_client = Column(ForeignKey("client.id_client"))
-
+    
     role = relationship("Role", back_populates="users")
-    client = relationship("Client", back_populates="users")
+    assignments = relationship("Assignment", backref="user", cascade="all, delete-orphan")
