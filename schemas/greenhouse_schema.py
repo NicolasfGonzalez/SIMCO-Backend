@@ -30,25 +30,24 @@ class GreenhouseListResponse(BaseModel):
 class GreenhouseCreate(BaseModel):
     id_client: UUID
     name: str = Field(..., min_length=3, max_length=100)
-    location: str = Field(..., min_length=3, max_length=200)
+    address: str = Field(..., min_length=3, max_length=200)
     latitude: float
     longitude: float
 
 class GreenhouseUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=3, max_length=100)
-    location: Optional[str] = Field(None, min_length=3, max_length=200)
+    address: Optional[str] = Field(None, min_length=3, max_length=200)
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     is_active: Optional[bool] = None
 
-# Respuesta para la tabla principal (DataGrid)
 class GreenhouseCrudListResponse(BaseModel):
     id_greenhouse: UUID
     name: str
-    location: str
+    address: str
     is_active: bool
     status: str
-    responsables: List[str] = [] 
+    responsables: List[str] = []
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -56,17 +55,20 @@ class PaginatedGreenhouseResponse(BaseModel):
     items: List[GreenhouseCrudListResponse]
     total: int
 
-# Respuesta para el modal de Detalles / Edición
+class AssignUsersPayload(BaseModel):
+    user_ids: List[UUID]
+    
 class GreenhouseDetailResponse(BaseModel):
     id_greenhouse: UUID
     id_client: UUID
     name: str
-    location: str
+    address: str
     latitude: float
     longitude: float
     is_active: bool
     status: str
     created_at: datetime
     responsables: List[str] = []
+    responsables_ids: List[UUID] = []
 
     model_config = ConfigDict(from_attributes=True)

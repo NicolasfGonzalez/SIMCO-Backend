@@ -1,89 +1,58 @@
-
-from models.greenhouse import Greenhouse 
-from schemas.greenhouse_schema import GreenhouseBasicResponse
 from uuid import UUID
+from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
+from sqlalchemy import delete
 
 from models.greenhouse import Greenhouse
-from models.assignment import Assignment # Importamos la tabla intermedia
-from schemas.greenhouse_schema import GreenhouseCreate, GreenhouseUpdate
+from models.assignment import Assignment
+from schemas.greenhouse_schema import GreenhouseCreate, GreenhouseUpdate, GreenhouseBasicResponse
 from mappers.greenhouse_mapper import (
-    map_greenhouse_to_list_response, 
-    map_greenhouse_to_detail_response   
+    map_greenhouse_to_list_response,
+    map_greenhouse_to_detail_response
 )
+from models.assignment import Assignment
 
-async def get_greenhouses_by_client(
-    db: AsyncSession,
-    client_id: UUID
-) -> list[GreenhouseBasicResponse]:
-
+#  Servicio para listar invernaderos segun el cliente
+async def get_greenhouses_by_client(db: AsyncSession, client_id: UUID) -> list[GreenhouseBasicResponse]:
     result = await db.execute(
-        select(
-            Greenhouse.id_greenhouse,
-            Greenhouse.name
-        )
-        .where(
-            Greenhouse.id_client == client_id
-        )
-        .order_by(
-            Greenhouse.name.asc()
-        )
+        select(Greenhouse.id_greenhouse, Greenhouse.name)
+        .where(Greenhouse.id_client == client_id)
+        .order_by(Greenhouse.name.asc())
     )
-
-    greenhouses = result.all()
-
     return [
-        GreenhouseBasicResponse(
-            id_greenhouse=greenhouse.id_greenhouse,
-            name=greenhouse.name
-        )
-        for greenhouse in greenhouses
+        GreenhouseBasicResponse(id_greenhouse=row.id_greenhouse, name=row.name)
+        for row in result.all()
     ]
 
-# ==========================================
-# Crear Invernadero
-# ==========================================
+# Servicio para crear un invernadero
 async def create_greenhouse(db: AsyncSession, gh_data: GreenhouseCreate):
     new_gh = Greenhouse(
         id_client=gh_data.id_client,
         name=gh_data.name.strip(),
-        location=gh_data.location.strip(),
+        address=gh_data.address.strip(),
         latitude=gh_data.latitude,
         longitude=gh_data.longitude,
         is_active=True
     )
-    
     db.add(new_gh)
     await db.commit()
-    # Refrescamos cargando la relación vacía de assignments para el mapper
     await db.refresh(new_gh, attribute_names=["assignments"])
-    
     return map_greenhouse_to_detail_response(new_gh)
 
-# ==========================================
-# Listar Invernaderos (Con filtro y paginación)
-# ==========================================
-async def list_greenhouses(
-    db: AsyncSession,
-    client_id: UUID = None,
-    limit: int = 10,
-    offset: int = 0
-):
-    # Cargamos la tabla intermedia y, anidado a ella, el usuario para obtener su nombre
+# Servicio para listar invernaderos con paginación y filtrado
+async def list_greenhouses(db: AsyncSession, client_id: Optional[UUID] = None, limit: int = 50, offset: int = 0):
     query = select(Greenhouse).options(
         selectinload(Greenhouse.assignments).selectinload(Assignment.user)
     )
-
+    
     if client_id:
         query = query.where(Greenhouse.id_client == client_id)
 
-    # Ordenamos por orden de creación (Los más nuevos primero)
     query = query.order_by(Greenhouse.created_at.desc())
 
-    # Total para paginación
     total_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = total_result.scalar() or 0
 
@@ -95,9 +64,7 @@ async def list_greenhouses(
         "total": total
     }
 
-# ==========================================
-# Obtener Invernadero por ID
-# ==========================================
+# Servicio para obtener un invernadero por su ID
 async def get_greenhouse_by_id(db: AsyncSession, gh_id: UUID):
     result = await db.execute(
         select(Greenhouse)
@@ -105,15 +72,11 @@ async def get_greenhouse_by_id(db: AsyncSession, gh_id: UUID):
         .options(selectinload(Greenhouse.assignments).selectinload(Assignment.user))
     )
     gh = result.scalars().first()
-    
     if not gh:
         raise HTTPException(status_code=404, detail="Invernadero no encontrado")
-        
     return map_greenhouse_to_detail_response(gh)
 
-# ==========================================
-# Actualizar Invernadero
-# ==========================================
+# Servicio para actualizar un invernadero
 async def update_greenhouse(db: AsyncSession, gh_id: UUID, gh_data: GreenhouseUpdate):
     result = await db.execute(
         select(Greenhouse)
@@ -121,7 +84,6 @@ async def update_greenhouse(db: AsyncSession, gh_id: UUID, gh_data: GreenhouseUp
         .options(selectinload(Greenhouse.assignments).selectinload(Assignment.user))
     )
     gh = result.scalars().first()
-    
     if not gh:
         raise HTTPException(status_code=404, detail="Invernadero no encontrado")
 
@@ -131,12 +93,9 @@ async def update_greenhouse(db: AsyncSession, gh_id: UUID, gh_data: GreenhouseUp
 
     await db.commit()
     await db.refresh(gh)
-    
     return map_greenhouse_to_detail_response(gh)
 
-# ==========================================
-# Activar / Desactivar Invernadero
-# ==========================================
+# Servicio para cambiar el estado de un invernadero 
 async def toggle_greenhouse_status(db: AsyncSession, gh_id: UUID):
     result = await db.execute(
         select(Greenhouse)
@@ -144,13 +103,47 @@ async def toggle_greenhouse_status(db: AsyncSession, gh_id: UUID):
         .options(selectinload(Greenhouse.assignments).selectinload(Assignment.user))
     )
     gh = result.scalars().first()
-    
     if not gh:
         raise HTTPException(status_code=404, detail="Invernadero no encontrado")
 
     gh.is_active = not gh.is_active
-    
     await db.commit()
     await db.refresh(gh)
-    
     return map_greenhouse_to_detail_response(gh)
+
+# Servicio para asignar usuarios a un invernadero
+async def assign_users_to_greenhouse(db: AsyncSession, gh_id: UUID, user_ids: list[UUID]):
+    # Validar existencia
+    result = await db.execute(
+        select(Greenhouse).where(Greenhouse.id_greenhouse == gh_id)
+    )
+    gh = result.scalars().first()
+    
+    if not gh:
+        raise HTTPException(status_code=404, detail="Invernadero no encontrado")
+
+    # Limpiar asignaciones anteriores
+    await db.execute(
+        delete(Assignment).where(Assignment.id_greenhouse == gh_id)
+    )
+
+    # Crear las nuevas asignaciones
+    if user_ids:
+        new_assignments = [
+            Assignment(id_user=uid, id_greenhouse=gh_id) for uid in user_ids
+        ]
+        db.add_all(new_assignments)
+
+    # Confirmar transacción
+    await db.commit()
+    
+    # Volver a consultar el invernadero con las relaciones recién creadas
+    updated_result = await db.execute(
+        select(Greenhouse)
+        .where(Greenhouse.id_greenhouse == gh_id)
+        .options(selectinload(Greenhouse.assignments).selectinload(Assignment.user))
+    )
+    updated_gh = updated_result.scalars().first()
+
+    # Retornar al frontend
+    return map_greenhouse_to_detail_response(updated_gh)
