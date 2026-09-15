@@ -1,17 +1,11 @@
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict
-from typing import List
+from typing import List, Optional
+from pydantic import BaseModel, ConfigDict, Field
+from datetime import datetime
 
-
+#  Usados por CRUD Usuarios
 class GreenhouseBase(BaseModel):
     name: str
-
-class GreenhouseResponse(GreenhouseBase):
-    id_greenhouse: UUID
-    id_client: UUID
-
-    model_config = ConfigDict(from_attributes=True)
-
 
 class GreenhouseBasicResponse(BaseModel):
     id_greenhouse: UUID
@@ -28,5 +22,53 @@ class GreenhouseResponse(BaseModel):
 
 class GreenhouseListResponse(BaseModel):
     items: List[GreenhouseResponse] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Para CRUD propio de Invernaderos
+class GreenhouseCreate(BaseModel):
+    id_client: UUID
+    name: str = Field(..., min_length=3, max_length=100)
+    address: str = Field(..., min_length=3, max_length=200)
+    latitude: float
+    longitude: float
+
+class GreenhouseUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=3, max_length=100)
+    address: Optional[str] = Field(None, min_length=3, max_length=200)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    is_active: Optional[bool] = None
+
+class GreenhouseCrudListResponse(BaseModel):
+    id_greenhouse: UUID
+    name: str
+    address: str
+    is_active: bool
+    status: str
+    responsables: List[str] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+class PaginatedGreenhouseResponse(BaseModel):
+    items: List[GreenhouseCrudListResponse]
+    total: int
+
+class AssignUsersPayload(BaseModel):
+    user_ids: List[UUID]
+    
+class GreenhouseDetailResponse(BaseModel):
+    id_greenhouse: UUID
+    id_client: UUID
+    name: str
+    address: str
+    latitude: float
+    longitude: float
+    is_active: bool
+    status: str
+    created_at: datetime
+    responsables: List[str] = []
+    responsables_ids: List[UUID] = []
 
     model_config = ConfigDict(from_attributes=True)
