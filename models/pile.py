@@ -17,8 +17,9 @@ class Pile(Base):
     code = Column(String(50), unique=True, nullable=False)
     name = Column(String(100), nullable=True)
     process_start_date = Column(TIMESTAMP, nullable=False)
+    estimated_end_date = Column(TIMESTAMP, nullable=True)
+    status = Column(String(50), nullable=False)
     created_at = Column(TIMESTAMP, server_default=text("NOW()"), nullable=False)
 
-    # Relaciones
     greenhouse = relationship("Greenhouse", backref="piles")
     devices = relationship("Device", back_populates="pile")

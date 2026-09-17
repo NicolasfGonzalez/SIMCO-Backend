@@ -1,230 +1,233 @@
 from uuid import UUID
 from typing import Optional
+from datetime import datetime
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from motor.motor_asyncio import AsyncIOMotorDatabase
 from fastapi import HTTPException, status
 
 from models.pile import Pile
 from models.device import Device
 from schemas.pile_schema import PileCreate, PileUpdate
-from mappers.pile_mapper import map_pile_to_detail_response, map_pile_to_list_response
 
+# Colección estándar 
+MONGO_COLLECTION = "compost_piles"
 
-# ============================================================
-# CREAR PILA (PostgreSQL + MongoDB Atlas)
-# ============================================================
-async def create_pile(
-    db: AsyncSession, 
-    mongo_db: AsyncIOMotorDatabase, 
-    payload: PileCreate
-):
-    # Validar duplicados por código
-    existing = await db.execute(
-        select(Pile).where(Pile.code == payload.code.strip().upper())
-    )
-    if existing.scalar_one_or_none():
+# servicio para crear una pila de compostaje
+async def create_pile(db: AsyncSession, mongo_db, payload: PileCreate) -> dict:
+    code_upper = payload.code.strip().upper()
+
+    # Verificar existencia previa
+    existing = await db.execute(select(Pile).where(Pile.code == code_upper))
+    if existing.scalars().first():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"La pila con código '{payload.code}' ya se encuentra registrada"
+            detail=f"Ya existe una pila de compostaje con el código '{code_upper}'."
         )
 
-    # Sanear fecha para PostgreSQL (TIMESTAMP WITHOUT TIME ZONE)
-    clean_process_date = payload.process_start_date
-    if clean_process_date.tzinfo is not None:
-        clean_process_date = clean_process_date.replace(tzinfo=None)
+    # Normalizar fechas a Naive UTC (sin zona horaria) para PostgreSQL
+    start_date_naive = payload.process_start_date.replace(tzinfo=None) if payload.process_start_date else datetime.utcnow()
+    end_date_naive = payload.estimated_end_date.replace(tzinfo=None) if payload.estimated_end_date else None
 
-    # 1. Insertar en PostgreSQL
+    # Guardar entidad en PostgreSQL
     new_pile = Pile(
         id_greenhouse=payload.id_greenhouse,
-        code=payload.code.strip().upper(),
+        code=code_upper,
         name=payload.name.strip() if payload.name else None,
-        process_start_date=clean_process_date
+        process_start_date=start_date_naive,
+        estimated_end_date=end_date_naive,
+        status="Activa",
     )
     db.add(new_pile)
     await db.commit()
-    
-    # 2. Re-consultar la pila con relaciones precargadas para el mapper
-    result = await db.execute(
-        select(Pile)
-        .where(Pile.id_pile == new_pile.id_pile)
-        .options(selectinload(Pile.devices))
-    )
-    created_pile = result.scalars().first()
 
-    # 3. Guardar metadatos en MongoDB Atlas (Colección "compost_piles")
-    mongo_doc = {
-        "pile_code": created_pile.code,
-        "location": payload.location or "",
-        "start_date": payload.process_start_date.isoformat(),
-        "estimated_end_date": payload.estimated_end_date.isoformat() if payload.estimated_end_date else None,
-        "status": "Activa",
-        "base_material": payload.base_material or "",
-        "notes": payload.notes or ""
-    }
-
+    # Guardar metadatos en MongoDB Atlas
     if mongo_db is not None:
         try:
-            await mongo_db["compost_piles"].update_one(
-                {"pile_code": created_pile.code},
-                {"$set": mongo_doc},
-                upsert=True
-            )
+            await mongo_db[MONGO_COLLECTION].insert_one({
+                "pile_code": code_upper,
+                "status": "Activa",
+                "start_date": start_date_naive.isoformat(),
+                "estimated_end_date": end_date_naive.isoformat() if end_date_naive else None,
+                "base_material": getattr(payload, "base_material", "") or "",
+                "notes": getattr(payload, "notes", "") or "",
+                "created_at": datetime.utcnow().isoformat(),
+            })
         except Exception as e:
-            print(f"Error registrando en Mongo ('compost_piles'): {e}")
+            print(f"Error al guardar metadatos en MongoDB: {e}")
 
-    # 4. Retornar la respuesta totalmente serializada
-    return map_pile_to_detail_response(created_pile, mongo_doc, None)
-# ============================================================
-# LISTAR PILAS PAGINADAS
-# ============================================================
+    return await get_pile_by_id(db, mongo_db, new_pile.id_pile)
+
+
 async def list_piles(
     db: AsyncSession,
-    mongo_db: AsyncIOMotorDatabase = None,  # 👈 Agregado para aceptar la inyección de FastAPI sin fallar
+    mongo_db,
     greenhouse_id: Optional[UUID] = None,
-    limit: int = 50,
-    offset: int = 0
-):
+    limit: int = 4,   
+    offset: int = 0,  
+) -> dict:
     query = select(Pile).options(selectinload(Pile.devices))
 
-    # Filtrar por Invernadero
     if greenhouse_id:
         query = query.where(Pile.id_greenhouse == greenhouse_id)
 
     query = query.order_by(Pile.created_at.desc())
 
-    # Total de registros para la paginación del frontend
-    total_result = await db.execute(select(func.count()).select_from(query.subquery()))
+    # Obtener el TOTAL REAL de pilas para que el frontend calcule el número de páginas
+    total_query = select(func.count()).select_from(
+        select(Pile.id_pile).where(Pile.id_greenhouse == greenhouse_id).subquery()
+        if greenhouse_id else select(Pile.id_pile).subquery()
+    )
+    total_result = await db.execute(total_query)
     total = total_result.scalar() or 0
 
-    # Ejecutar consulta paginada
     result = await db.execute(query.limit(limit).offset(offset))
-    piles = result.scalars().unique().all()
+    piles = result.scalars().all()
+
+    items = []
+    for pile in piles:
+        assigned_device = pile.devices[0].code if pile.devices else None
+
+        current_status = getattr(pile, "status", "Activa")
+        if mongo_db is not None:
+            doc = await mongo_db["compost_piles"].find_one({"pile_code": pile.code}, {"status": 1})
+            if doc and "status" in doc:
+                current_status = doc["status"]
+
+        items.append({
+            "id_pile": pile.id_pile,
+            "id_greenhouse": pile.id_greenhouse,
+            "code": pile.code,
+            "name": pile.name,
+            "process_start_date": pile.process_start_date,
+            "estimated_end_date": getattr(pile, "estimated_end_date", None),
+            "status": current_status,
+            "created_at": pile.created_at,
+            "assigned_device_code": assigned_device,
+        })
+
+    return {"items": items, "total": total}
+
+# service para obtener detalles de una pila específica por su ID
+async def get_pile_by_id(db: AsyncSession, mongo_db, pile_id: UUID) -> dict:
+    result = await db.execute(
+        select(Pile)
+        .where(Pile.id_pile == pile_id)
+        .options(selectinload(Pile.devices))
+    )
+    pile = result.scalars().first()
+
+    if not pile:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Pila de compostaje no encontrada."
+        )
+
+    assigned_device = pile.devices[0].code if pile.devices else None
+
+    mongo_doc = None
+    if mongo_db is not None:
+        mongo_doc = await mongo_db[MONGO_COLLECTION].find_one({"pile_code": pile.code})
 
     return {
-        "items": [map_pile_to_list_response(pile) for pile in piles],
-        "total": total
+        "id_pile": pile.id_pile,
+        "id_greenhouse": pile.id_greenhouse,
+        "code": pile.code,
+        "name": pile.name,
+        "process_start_date": pile.process_start_date,
+        "estimated_end_date": getattr(pile, "estimated_end_date", None),
+        "status": mongo_doc.get("status", getattr(pile, "status", "Activa")) if mongo_doc else getattr(pile, "status", "Activa"),
+        "base_material": mongo_doc.get("base_material", "") if mongo_doc else "",
+        "notes": mongo_doc.get("notes", "") if mongo_doc else "",
+        "created_at": pile.created_at,
+        "assigned_device_code": assigned_device,
     }
-# ============================================================
-# OBTENER DETALLE POR ID
-# ============================================================
-async def get_pile_by_id(
-    db: AsyncSession,
-    mongo_db: AsyncIOMotorDatabase,
-    pile_id: UUID
-):
+
+# service para actualizar los detalles de una pila específica
+async def update_pile(db: AsyncSession, mongo_db, pile_id: UUID, payload: PileUpdate) -> dict:
     result = await db.execute(
-        select(Pile)
-        .where(Pile.id_pile == pile_id)
-        .options(selectinload(Pile.devices))
+        select(Pile).where(Pile.id_pile == pile_id)
     )
     pile = result.scalars().first()
 
     if not pile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Pila de compostaje no encontrada"
+            detail="Pila de compostaje no encontrada."
         )
 
-    # Consultar metadatos en MongoDB Atlas
-    mongo_doc = None
-    latest_telemetry = None
-
-    if mongo_db is not None:
-        mongo_doc = await mongo_db["piles"].find_one({"pile_code": pile.code})
-        latest_telemetry = await mongo_db["telemetry"].find_one(
-            {"metadata.pile_code": pile.code},
-            sort=[("timestamp", -1)]
-        )
-
-    return map_pile_to_detail_response(pile, mongo_doc, latest_telemetry)
-
-
-# ============================================================
-# ACTUALIZAR PILA
-# ============================================================
-async def update_pile(
-    db: AsyncSession,
-    mongo_db: AsyncIOMotorDatabase,
-    pile_id: UUID,
-    payload: PileUpdate
-):
-    result = await db.execute(
-        select(Pile)
-        .where(Pile.id_pile == pile_id)
-        .options(selectinload(Pile.devices))
-    )
-    pile = result.scalars().first()
-
-    if not pile:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Pila de compostaje no encontrada"
-        )
-
-    # Actualizar campos relacionales
+    #  Actualización en PostgreSQL con conversión estricta de fechas Naive UTC
     if payload.name is not None:
         pile.name = payload.name.strip()
     if payload.process_start_date is not None:
-        pile.process_start_date = payload.process_start_date
+        pile.process_start_date = payload.process_start_date.replace(tzinfo=None)
+    if payload.estimated_end_date is not None:
+        pile.estimated_end_date = payload.estimated_end_date.replace(tzinfo=None)
+    if payload.status is not None:
+        pile.status = payload.status
+
+    # Regla de Liberación de Hardware
+    if payload.status in ["Finalizada", "Archivada"]:
+        devices_assigned = await db.execute(
+            select(Device).where(Device.id_pile == pile_id)
+        )
+        for dev in devices_assigned.scalars().all():
+            dev.id_pile = None
 
     await db.commit()
-    await db.refresh(pile)
 
-    # Actualizar metadatos en Mongo
-    mongo_update = {}
-    if payload.location is not None:
-        mongo_update["location"] = payload.location
-    if payload.estimated_end_date is not None:
-        mongo_update["estimated_end_date"] = payload.estimated_end_date.isoformat()
-    if payload.status is not None:
-        mongo_update["status"] = payload.status
-    if payload.base_material is not None:
-        mongo_update["base_material"] = payload.base_material
-    if payload.notes is not None:
-        mongo_update["notes"] = payload.notes
-
-    mongo_doc = None
+    # Sincronización en MongoDB Atlas en la colección 'compost_piles'
     if mongo_db is not None:
-        if mongo_update:
-            await mongo_db["piles"].update_one(
+        update_doc = {}
+        if payload.status is not None:
+            update_doc["status"] = payload.status
+        if payload.process_start_date is not None:
+            update_doc["start_date"] = payload.process_start_date.replace(tzinfo=None).isoformat()
+        if payload.estimated_end_date is not None:
+            update_doc["estimated_end_date"] = payload.estimated_end_date.replace(tzinfo=None).isoformat()
+        if payload.base_material is not None:
+            update_doc["base_material"] = payload.base_material.strip()
+        if payload.notes is not None:
+            update_doc["notes"] = payload.notes.strip()
+
+        if update_doc:
+            await mongo_db[MONGO_COLLECTION].update_one(
                 {"pile_code": pile.code},
-                {"$set": mongo_update},
+                {"$set": update_doc},
                 upsert=True
             )
-        mongo_doc = await mongo_db["piles"].find_one({"pile_code": pile.code})
 
-    return map_pile_to_detail_response(pile, mongo_doc, None)
+    return await get_pile_by_id(db, mongo_db, pile_id)
 
-
-# ============================================================
-# ASIGNAR DISPOSITIVO IOT
-# ============================================================
-async def assign_device_to_pile(
-    db: AsyncSession,
-    pile_id: UUID,
-    device_code: str
-):
-    result_pile = await db.execute(select(Pile).where(Pile.id_pile == pile_id))
-    pile = result_pile.scalars().first()
+# service para asignar un dispositivo a una pila específica
+async def assign_device_to_pile(db: AsyncSession, mongo_db, pile_id: UUID, device_code: Optional[str] = None) -> dict:
+    result = await db.execute(select(Pile).where(Pile.id_pile == pile_id))
+    pile = result.scalars().first()
 
     if not pile:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Pila no encontrada"
+            detail="Pila de compostaje no encontrada."
         )
 
-    result_device = await db.execute(select(Device).where(Device.code == device_code))
-    device = result_device.scalars().first()
+    previous_devices = await db.execute(select(Device).where(Device.id_pile == pile_id))
+    for dev in previous_devices.scalars().all():
+        dev.id_pile = None
 
-    if not device:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"El dispositivo {device_code} no está registrado"
+    if device_code and device_code.strip():
+        dev_result = await db.execute(
+            select(Device).where(Device.code == device_code.strip().upper())
         )
+        device = dev_result.scalars().first()
 
-    device.id_pile = pile.id_pile
+        if not device:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"El dispositivo '{device_code}' no existe."
+            )
+
+        device.id_pile = pile_id
+
     await db.commit()
 
-    return {"message": f"Dispositivo {device_code} asignado con éxito a la pila {pile.code}"}
+    return await get_pile_by_id(db, mongo_db, pile_id)
