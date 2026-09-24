@@ -1,35 +1,31 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import declarative_base
 from core.config import settings
 
-# Engine async (ARREGLADO)
+# Desactivar la caché de sentencias preparadas para asyncpg
 engine = create_async_engine(
-    settings.async_database_url, 
+    settings.async_database_url,
     echo=False,
     future=True,
-    pool_pre_ping=True,
-
     connect_args={
-        "statement_cache_size": 0
-    },
-
-    poolclass=NullPool
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0
+    }
 )
 
-# Sesión async
-AsyncSessionLocal = sessionmaker(
+AsyncSessionLocal = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=False,
-    autoflush=False,
-    autocommit=False
+    autocommit=False,
+    autoflush=False
 )
 
-# Base para modelos
 Base = declarative_base()
 
-# Dependency para FastAPI
 async def get_db():
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+        finally:
+            await session.close()

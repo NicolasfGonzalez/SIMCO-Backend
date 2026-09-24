@@ -36,7 +36,7 @@ async def get_greenhouses_by_client_endpoint(
 @router.get("/", response_model=PaginatedGreenhouseResponse)
 async def list_greenhouses_endpoint(
     client_id: Optional[UUID] = Query(None),
-    limit: int = Query(50, ge=1),
+    limit: int = Query(4, ge=1),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db)
 ):
